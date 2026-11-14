@@ -1,3 +1,3 @@
-module archive-loadtest
+module zoltraak
 
 go 1.22

@@ -51,7 +51,7 @@ type htmlView struct {
 func buildView(r report) htmlView {
 	c, s := r.Config, r.Summary
 	v := htmlView{
-		Title:       "archive-loadtest report: " + c.Base,
+		Title:       "zoltraak report: " + c.Base,
 		Started:     r.StartedAt.UTC().Format("2006-01-02 15:04:05 UTC"),
 		Interrupted: r.Interrupted,
 	}

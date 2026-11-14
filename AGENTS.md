@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Notes for agents working on `archive-loadtest`. Read `README.md` for user-facing docs;
+Notes for agents working on `zoltraak`. Read `README.md` for user-facing docs;
 this file covers structure, decisions and gotchas.
 
 ## What this is
@@ -67,13 +67,13 @@ summary -> report.
 ## Build and verify
 
 ```sh
-gofmt -l . && go vet ./... && go build -o archive-loadtest .
-./archive-loadtest -t http://SERVER/ubuntu --dry-run     # safe: only downloads Packages.gz
+gofmt -l . && go vet ./... && go build -o zoltraak .
+./zoltraak -t http://SERVER/ubuntu --dry-run     # safe: only downloads Packages.gz
 ```
 
 - `--dry-run` fetches only the index files (from `--index`, else `--target`). It sends no package
   requests, so it is the right smoke test.
-- The `archive-loadtest` binary is gitignored; rebuild after any code change.
+- The `zoltraak` binary is gitignored; rebuild after any code change.
 - There are no tests. Verify behaviour with `--dry-run` and the printed plan numbers.
 
 ## Safety with the user's server
