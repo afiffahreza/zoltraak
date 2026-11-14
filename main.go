@@ -40,15 +40,15 @@ func parseFlags() config {
 		suites, components string
 		seed               int64
 	)
-	flag.StringVar(&cfg.base, "base", "http://archive.ubuntu.com/ubuntu", "archive root URL to load test (the proxy cache)")
-	flag.StringVar(&cfg.indexBase, "index-base", "", "archive root URL used to fetch Packages.gz indexes (default: -base)")
-	flag.StringVar(&cfg.host, "host", "", "override the Host header (e.g. archive.ubuntu.com when -base is an IP)")
+	flag.StringVar(&cfg.base, "base", "http://archive.ubuntu.com/ubuntu", "archive root URL to load test")
+	flag.StringVar(&cfg.indexBase, "index-base", "", "archive root URL used to fetch Packages.gz indexes (default: --base)")
+	flag.StringVar(&cfg.host, "host", "", "override the Host header (e.g. archive.ubuntu.com when --base is an IP)")
 	flag.StringVar(&suites, "suites", "noble,noble-updates,noble-security", "comma-separated suites to draw packages from")
 	flag.StringVar(&components, "components", "main,restricted,universe,multiverse", "comma-separated components")
 	flag.StringVar(&cfg.arch, "arch", "amd64", "architecture (arm64/riscv64/... live on ports.ubuntu.com)")
 	flag.Float64Var(&cfg.rate, "rate", 5, "peak requests per second")
-	flag.DurationVar(&cfg.ramp, "ramp", time.Minute, "time to ramp linearly from 0 to -rate")
-	flag.DurationVar(&cfg.hold, "hold", time.Minute, "time to hold at -rate after the ramp")
+	flag.DurationVar(&cfg.ramp, "ramp", time.Minute, "time to ramp linearly from 0 to --rate")
+	flag.DurationVar(&cfg.hold, "hold", time.Minute, "time to hold at --rate after the ramp")
 	flag.IntVar(&cfg.maxInflight, "max-inflight", 100, "client-side cap on concurrent requests; excess requests are dropped and counted")
 	flag.DurationVar(&cfg.timeout, "timeout", 60*time.Second, "per-request timeout")
 	flag.Int64Var(&cfg.maxSize, "max-size", 1<<20, "skip packages larger than this many bytes (0 = no limit)")
@@ -58,6 +58,7 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.interval, "interval", time.Second, "stats print interval")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "fetch indexes, print the plan, and exit without sending load")
 	flag.StringVar(&cfg.out, "out", "", "directory to write report-<timestamp>.json/.csv/.html (summary + per-interval time series + charts)")
+	flag.Usage = usage
 	flag.Parse()
 
 	cfg.seed = uint64(seed)
@@ -69,6 +70,26 @@ func parseFlags() config {
 	cfg.suites = splitCSV(suites)
 	cfg.components = splitCSV(components)
 	return cfg
+}
+
+// usage prints help with GNU-style double-dash flags. The flag package accepts
+// both -flag and --flag; -h is the only single-dash shortcut documented.
+func usage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprintf(out, "Usage: %s [options]\n\nOptions:\n", os.Args[0])
+	flag.VisitAll(func(f *flag.Flag) {
+		name, desc := flag.UnquoteUsage(f)
+		line := "  --" + f.Name
+		if name != "" {
+			line += " " + name
+		}
+		fmt.Fprintf(out, "%s\n    \t%s", line, desc)
+		if f.DefValue != "" && f.DefValue != "0" && f.DefValue != "false" {
+			fmt.Fprintf(out, " (default %s)", f.DefValue)
+		}
+		fmt.Fprintln(out)
+	})
+	fmt.Fprintf(out, "  -h, --help\n    \tshow this help\n")
 }
 
 func splitCSV(s string) []string {
@@ -106,10 +127,10 @@ func main() {
 
 func run(cfg config) error {
 	if cfg.rate <= 0 || cfg.ramp < 0 || cfg.hold < 0 || cfg.maxInflight <= 0 {
-		return errors.New("-rate and -max-inflight must be > 0; -ramp and -hold must be >= 0")
+		return errors.New("--rate and --max-inflight must be > 0; --ramp and --hold must be >= 0")
 	}
 	if cfg.minSize < 0 || cfg.distinct < 0 || (cfg.maxSize > 0 && cfg.minSize > cfg.maxSize) {
-		return errors.New("-min-size and -distinct must be >= 0, and -min-size must not exceed -max-size")
+		return errors.New("--min-size and --distinct must be >= 0, and --min-size must not exceed --max-size")
 	}
 	pl := plan{rate: cfg.rate, ramp: cfg.ramp, hold: cfg.hold}
 	total := pl.total()
@@ -144,7 +165,7 @@ func run(cfg config) error {
 		cfg.rate, cfg.ramp, cfg.hold, total, len(uniq), cfg.seed)
 	fmt.Printf("      payload %.2f GiB total, avg %.0f KiB/request, ~%.0f MB/s (%.2f Gbit/s) at peak\n",
 		float64(bytes)/(1<<30), avg/1024, avg*cfg.rate/1e6, avg*cfg.rate*8/1e9)
-	fmt.Printf("      distinct footprint %.2f GiB (what the proxy must cache to serve every repeat from cache)\n",
+	fmt.Printf("      distinct footprint %.2f GiB (total size of the distinct packages requested)\n",
 		float64(footprint)/(1<<30))
 	if cfg.dryRun {
 		return nil

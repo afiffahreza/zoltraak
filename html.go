@@ -57,7 +57,7 @@ func buildView(r report) htmlView {
 	}
 	if s.Dropped > 0 {
 		v.Warnings = append(v.Warnings, fmt.Sprintf(
-			"%d requests were dropped because the client hit its in-flight cap (%d). The load generator, not the proxy, was a bottleneck; raise -max-inflight or reduce -rate.",
+			"%d requests were dropped because the client hit its in-flight cap (%d). The load generator, not the server, was a bottleneck; raise --max-inflight or reduce --rate.",
 			s.Dropped, c.MaxInflight))
 	}
 	if r.Interrupted {
