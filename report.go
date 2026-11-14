@@ -23,6 +23,8 @@ type reportConfig struct {
 	MaxInflight     int      `json:"max_inflight"`
 	TimeoutSeconds  float64  `json:"timeout_s"`
 	MaxSizeBytes    int64    `json:"max_size_bytes"`
+	MinSizeBytes    int64    `json:"min_size_bytes"`
+	Distinct        int      `json:"distinct"`
 	Seed            uint64   `json:"seed"`
 	PlannedRequests int      `json:"planned_requests"`
 	PlannedBytes    int64    `json:"planned_bytes"`

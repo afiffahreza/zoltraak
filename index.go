@@ -19,7 +19,7 @@ type pkg struct {
 }
 
 // loadPool downloads the Packages.gz index for every suite/component and
-// returns the de-duplicated set of packages with size <= maxSize (0 = no limit).
+// returns the de-duplicated set of packages with minSize <= size <= maxSize (0 = no limit).
 func loadPool(ctx context.Context, c *http.Client, cfg config) ([]pkg, error) {
 	seen := make(map[string]struct{})
 	var pool []pkg
@@ -32,7 +32,7 @@ func loadPool(ctx context.Context, c *http.Client, cfg config) ([]pkg, error) {
 			}
 			added := 0
 			for _, p := range pkgs {
-				if cfg.maxSize > 0 && p.size > cfg.maxSize {
+				if (cfg.maxSize > 0 && p.size > cfg.maxSize) || p.size < cfg.minSize {
 					continue
 				}
 				if _, dup := seen[p.path]; dup {
@@ -51,6 +51,30 @@ func loadPool(ctx context.Context, c *http.Client, cfg config) ([]pkg, error) {
 func shuffle(pool []pkg, seed uint64) {
 	rng := rand.New(rand.NewPCG(seed, 0))
 	rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+}
+
+// schedule returns the packages to request, in order. With distinct == 0 every
+// request is a unique package. Otherwise the first distinct packages of the
+// shuffled pool are sampled uniformly at random with replacement.
+func schedule(pool []pkg, total, distinct int, seed uint64) ([]pkg, error) {
+	if distinct == 0 {
+		if len(pool) < total {
+			return nil, fmt.Errorf("pool has %d unique packages but the plan needs %d (every request must be unique); "+
+				"add -suites/-components, widen the size range, reduce -rate/-ramp/-hold, or set -distinct", len(pool), total)
+		}
+		return pool[:total], nil
+	}
+	if len(pool) < distinct {
+		return nil, fmt.Errorf("pool has %d packages in the size range but -distinct is %d; "+
+			"add -suites/-components, widen the size range, or reduce -distinct", len(pool), distinct)
+	}
+	pool = pool[:distinct]
+	rng := rand.New(rand.NewPCG(seed, 1))
+	reqs := make([]pkg, total)
+	for i := range reqs {
+		reqs[i] = pool[rng.IntN(distinct)]
+	}
+	return reqs, nil
 }
 
 func fetchIndex(ctx context.Context, c *http.Client, url string) ([]pkg, error) {

@@ -96,7 +96,9 @@ func buildView(r report) htmlView {
 		[2]string{"Ramp / hold", dur(c.RampSeconds) + " / " + dur(c.HoldSeconds)},
 		[2]string{"Planned requests", strconv.Itoa(c.PlannedRequests)},
 		[2]string{"Planned payload", fmt.Sprintf("%.2f GiB", float64(c.PlannedBytes)/(1<<30))},
+		[2]string{"Min package size", sizeOrNone(c.MinSizeBytes)},
 		[2]string{"Max package size", sizeOrNone(c.MaxSizeBytes)},
+		[2]string{"Distinct packages", distinctOrAll(c.Distinct)},
 		[2]string{"Max in-flight", strconv.Itoa(c.MaxInflight)},
 		[2]string{"Request timeout", dur(c.TimeoutSeconds)},
 		[2]string{"Seed", strconv.FormatUint(c.Seed, 10)},
@@ -160,6 +162,13 @@ func buildView(r report) htmlView {
 			chartSeries{"Dropped (cumulative)", "c4", col(func(p sample) float64 { return float64(p.Dropped) })}),
 	}
 	return v
+}
+
+func distinctOrAll(n int) string {
+	if n <= 0 {
+		return "every request unique"
+	}
+	return strconv.Itoa(n)
 }
 
 func sizeOrNone(n int64) string {

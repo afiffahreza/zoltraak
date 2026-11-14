@@ -26,7 +26,8 @@ type config struct {
 	ramp, hold            time.Duration
 	maxInflight           int
 	timeout               time.Duration
-	maxSize               int64
+	maxSize, minSize      int64
+	distinct              int
 	seed                  uint64
 	interval              time.Duration
 	dryRun                bool
@@ -51,6 +52,8 @@ func parseFlags() config {
 	flag.IntVar(&cfg.maxInflight, "max-inflight", 100, "client-side cap on concurrent requests; excess requests are dropped and counted")
 	flag.DurationVar(&cfg.timeout, "timeout", 60*time.Second, "per-request timeout")
 	flag.Int64Var(&cfg.maxSize, "max-size", 1<<20, "skip packages larger than this many bytes (0 = no limit)")
+	flag.Int64Var(&cfg.minSize, "min-size", 0, "skip packages smaller than this many bytes (0 = no limit)")
+	flag.IntVar(&cfg.distinct, "distinct", 0, "request from a pool of this many distinct packages, picked at random with repeats (0 = every request is a unique package)")
 	flag.Int64Var(&seed, "seed", time.Now().UnixNano(), "shuffle seed; reuse it to replay the same request order")
 	flag.DurationVar(&cfg.interval, "interval", time.Second, "stats print interval")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "fetch indexes, print the plan, and exit without sending load")
@@ -105,6 +108,9 @@ func run(cfg config) error {
 	if cfg.rate <= 0 || cfg.ramp < 0 || cfg.hold < 0 || cfg.maxInflight <= 0 {
 		return errors.New("-rate and -max-inflight must be > 0; -ramp and -hold must be >= 0")
 	}
+	if cfg.minSize < 0 || cfg.distinct < 0 || (cfg.maxSize > 0 && cfg.minSize > cfg.maxSize) {
+		return errors.New("-min-size and -distinct must be >= 0, and -min-size must not exceed -max-size")
+	}
 	pl := plan{rate: cfg.rate, ramp: cfg.ramp, hold: cfg.hold}
 	total := pl.total()
 	if total == 0 {
@@ -118,22 +124,28 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
-	if len(pool) < total {
-		return fmt.Errorf("pool has %d unique packages but the plan needs %d (every request must be unique); "+
-			"add -suites/-components, or reduce -rate/-ramp/-hold", len(pool), total)
-	}
 	shuffle(pool, cfg.seed)
-	pool = pool[:total]
+	reqs, err := schedule(pool, total, cfg.distinct, cfg.seed)
+	if err != nil {
+		return err
+	}
 
-	var bytes int64
-	for _, p := range pool {
+	var bytes, footprint int64
+	uniq := make(map[string]struct{}, len(reqs))
+	for _, p := range reqs {
 		bytes += p.size
+		if _, seen := uniq[p.path]; !seen {
+			uniq[p.path] = struct{}{}
+			footprint += p.size
+		}
 	}
 	avg := float64(bytes) / float64(total)
-	fmt.Printf("\nplan: ramp 0->%.0f rps over %s, hold %s => %d unique requests (pool %s)\n",
-		cfg.rate, cfg.ramp, cfg.hold, total, "shuffled, seed "+fmt.Sprint(cfg.seed))
-	fmt.Printf("      payload %.2f GiB total, avg %.0f KiB/package, ~%.0f MB/s (%.2f Gbit/s) at peak\n",
+	fmt.Printf("\nplan: ramp 0->%.0f rps over %s, hold %s => %d requests over %d distinct packages (shuffled, seed %d)\n",
+		cfg.rate, cfg.ramp, cfg.hold, total, len(uniq), cfg.seed)
+	fmt.Printf("      payload %.2f GiB total, avg %.0f KiB/request, ~%.0f MB/s (%.2f Gbit/s) at peak\n",
 		float64(bytes)/(1<<30), avg/1024, avg*cfg.rate/1e6, avg*cfg.rate*8/1e9)
+	fmt.Printf("      distinct footprint %.2f GiB (what the proxy must cache to serve every repeat from cache)\n",
+		float64(footprint)/(1<<30))
 	if cfg.dryRun {
 		return nil
 	}
@@ -177,7 +189,7 @@ dispatch:
 				wg.Done()
 			}()
 			st.record(fetch(client, cfg, p))
-		}(pool[n])
+		}(reqs[n])
 	}
 
 	interrupted := ctx.Err() != nil
@@ -203,7 +215,7 @@ dispatch:
 			Suites: cfg.suites, Components: cfg.components, Arch: cfg.arch,
 			PeakRPS: cfg.rate, RampSeconds: cfg.ramp.Seconds(), HoldSeconds: cfg.hold.Seconds(),
 			MaxInflight: cfg.maxInflight, TimeoutSeconds: cfg.timeout.Seconds(),
-			MaxSizeBytes: cfg.maxSize, Seed: cfg.seed,
+			MaxSizeBytes: cfg.maxSize, MinSizeBytes: cfg.minSize, Distinct: cfg.distinct, Seed: cfg.seed,
 			PlannedRequests: total, PlannedBytes: bytes,
 		},
 		Summary:    sum,
