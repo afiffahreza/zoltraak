@@ -26,8 +26,11 @@ Needs Go >= 1.22 (Ubuntu 24.04: `apt install golang-go`).
 # Check pool size and expected bandwidth first, no load sent
 ./archive-loadtest -base http://PROXY/ubuntu -dry-run
 
-# Defaults: ramp 0->200 rps over 5m, hold 2m (54,000 unique packages)
+# Defaults (laptop-friendly): ramp 0->5 rps over 1m, hold 1m, packages <= 1 MiB (450 unique packages)
 ./archive-loadtest -base http://PROXY/ubuntu
+
+# Full-scale run: 200 rps, 5m ramp, 2m hold, no size cap (54,000 unique packages)
+./archive-loadtest -base http://PROXY/ubuntu -rate 200 -ramp 5m -hold 2m -max-inflight 2000 -max-size 0
 
 # Proxy addressed by IP, indexes fetched from the real archive
 ./archive-loadtest -base http://10.0.0.5/ubuntu -host archive.ubuntu.com \
@@ -62,9 +65,10 @@ totals. The report is also written after Ctrl-C (`"interrupted": true`) but not 
 
 ## Things to know
 
-- **Bandwidth is the real limit.** 200 rps of average-size debs is roughly 1 Gbit/s or more.
-  `-dry-run` prints the estimate. On a laptop/Wi-Fi the link saturates first and latencies then
-  measure your uplink, not the proxy. Use `-max-size 1048576` (or similar) to cap per-request size.
+- **Bandwidth is the real limit.** Defaults (5 rps, packages <= 1 MiB) peak at about 5 MB/s.
+  200 rps of average-size debs is roughly 1 Gbit/s or more. `-dry-run` prints the estimate. On a
+  laptop/Wi-Fi the link saturates first and latencies then measure your uplink, not the proxy.
+  Use `-max-size` to cap per-request size (`0` = no limit).
 - **Pool size.** Unique-per-request needs `rate*ramp/2 + rate*hold` packages. The default suites
   (noble, noble-updates, noble-security; all components) give well over 54k for amd64; add suites
   such as `jammy,jammy-updates` for longer runs. The tool refuses to start if the pool is too small.
