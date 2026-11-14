@@ -23,7 +23,10 @@ Needs Go >= 1.22 (Ubuntu 24.04: `apt install golang-go`).
 
 ## Run
 
-`--base` is the archive root URL of the server you want to test.
+`--base` is required: the archive root URL of the server you want to test. Hosts at or under
+`ubuntu.com` (for example `archive.ubuntu.com`) are refused, so the public archive cannot be load
+tested. `--index-base` may still point at the real archive: the tool only downloads the small
+`Packages.gz` index files from it, one per suite/component.
 
 ```sh
 # Check pool size and expected bandwidth first, no load sent

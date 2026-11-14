@@ -40,7 +40,7 @@ func parseFlags() config {
 		suites, components string
 		seed               int64
 	)
-	flag.StringVar(&cfg.base, "base", "http://archive.ubuntu.com/ubuntu", "archive root URL to load test")
+	flag.StringVar(&cfg.base, "base", "", "(required) archive root URL of the server to load test; public *.ubuntu.com hosts are refused")
 	flag.StringVar(&cfg.indexBase, "index-base", "", "archive root URL used to fetch Packages.gz indexes (default: --base)")
 	flag.StringVar(&cfg.host, "host", "", "override the Host header (e.g. archive.ubuntu.com when --base is an IP)")
 	flag.StringVar(&suites, "suites", "noble,noble-updates,noble-security", "comma-separated suites to draw packages from")
@@ -125,7 +125,27 @@ func main() {
 	}
 }
 
+// validateBase rejects a missing --base and any host at or under ubuntu.com, so
+// the tool cannot be pointed at the public Ubuntu archive.
+func validateBase(base string) error {
+	if base == "" {
+		return errors.New("--base is required: the archive root URL of the server to load test, e.g. http://SERVER/ubuntu")
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("--base %q must be an http:// or https:// URL with a host", base)
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "ubuntu.com" || strings.HasSuffix(host, ".ubuntu.com") {
+		return fmt.Errorf("--base host %q is a public Ubuntu archive; load testing it is not allowed (use your own server)", host)
+	}
+	return nil
+}
+
 func run(cfg config) error {
+	if err := validateBase(cfg.base); err != nil {
+		return err
+	}
 	if cfg.rate <= 0 || cfg.ramp < 0 || cfg.hold < 0 || cfg.maxInflight <= 0 {
 		return errors.New("--rate and --max-inflight must be > 0; --ramp and --hold must be >= 0")
 	}
