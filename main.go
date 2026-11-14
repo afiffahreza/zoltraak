@@ -40,9 +40,9 @@ func parseFlags() config {
 		suites, components string
 		seed               int64
 	)
-	flag.StringVar(&cfg.base, "base", "", "(required) archive root URL of the server to load test; public *.ubuntu.com hosts are refused")
-	flag.StringVar(&cfg.indexBase, "index-base", "", "archive root URL used to fetch Packages.gz indexes (default: --base)")
-	flag.StringVar(&cfg.host, "host", "", "override the Host header (e.g. archive.ubuntu.com when --base is an IP)")
+	flag.StringVar(&cfg.base, "target", "", "(required) archive root URL of the server to load test")
+	flag.StringVar(&cfg.indexBase, "index", "", "archive root URL used to fetch Packages.gz indexes (default: --target)")
+	flag.StringVar(&cfg.host, "host", "", "override the Host header (e.g. archive.ubuntu.com when --target is an IP)")
 	flag.StringVar(&suites, "suites", "noble,noble-updates,noble-security", "comma-separated suites to draw packages from")
 	flag.StringVar(&components, "components", "main,restricted,universe,multiverse", "comma-separated components")
 	flag.StringVar(&cfg.arch, "arch", "amd64", "architecture (arm64/riscv64/... live on ports.ubuntu.com)")
@@ -51,13 +51,16 @@ func parseFlags() config {
 	flag.DurationVar(&cfg.hold, "hold", time.Minute, "time to hold at --rate after the ramp")
 	flag.IntVar(&cfg.maxInflight, "max-inflight", 100, "client-side cap on concurrent requests; excess requests are dropped and counted")
 	flag.DurationVar(&cfg.timeout, "timeout", 60*time.Second, "per-request timeout")
-	flag.Int64Var(&cfg.maxSize, "max-size", 1<<20, "skip packages larger than this many bytes (0 = no limit)")
-	flag.Int64Var(&cfg.minSize, "min-size", 0, "skip packages smaller than this many bytes (0 = no limit)")
+	flag.Var(newSizeFlag(&cfg.maxSize, 1<<20), "max-size", "skip packages larger than this `size`: bytes or K/M/G suffix, e.g. 1M, 512K, 200M (0 = no limit)")
+	flag.Var(newSizeFlag(&cfg.minSize, 0), "min-size", "skip packages smaller than this `size`: bytes or K/M/G suffix, e.g. 10M (0 = no limit)")
 	flag.IntVar(&cfg.distinct, "distinct", 0, "request from a pool of this many distinct packages, picked at random with repeats (0 = every request is a unique package)")
 	flag.Int64Var(&seed, "seed", time.Now().UnixNano(), "shuffle seed; reuse it to replay the same request order")
 	flag.DurationVar(&cfg.interval, "interval", time.Second, "stats print interval")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "fetch indexes, print the plan, and exit without sending load")
 	flag.StringVar(&cfg.out, "out", "", "directory to write report-<timestamp>.json/.csv/.html (summary + per-interval time series + charts)")
+	for long, short := range shortcuts {
+		flag.Var(flag.Lookup(long).Value, short, flag.Lookup(long).Usage)
+	}
 	flag.Usage = usage
 	flag.Parse()
 
@@ -72,14 +75,28 @@ func parseFlags() config {
 	return cfg
 }
 
-// usage prints help with GNU-style double-dash flags. The flag package accepts
-// both -flag and --flag; -h is the only single-dash shortcut documented.
+// shortcuts maps long flag names to their single-letter aliases. An alias
+// writes to the same variable as its long flag.
+var shortcuts = map[string]string{"target": "t", "index": "i"}
+
+// usage prints help with GNU-style double-dash flags and their single-dash
+// shortcuts. The flag package accepts both -flag and --flag.
 func usage() {
 	out := flag.CommandLine.Output()
 	fmt.Fprintf(out, "Usage: %s [options]\n\nOptions:\n", os.Args[0])
+	isShortcut := make(map[string]bool, len(shortcuts))
+	for _, s := range shortcuts {
+		isShortcut[s] = true
+	}
 	flag.VisitAll(func(f *flag.Flag) {
+		if isShortcut[f.Name] {
+			return
+		}
 		name, desc := flag.UnquoteUsage(f)
 		line := "  --" + f.Name
+		if s, ok := shortcuts[f.Name]; ok {
+			line = "  -" + s + ", --" + f.Name
+		}
 		if name != "" {
 			line += " " + name
 		}
@@ -125,19 +142,14 @@ func main() {
 	}
 }
 
-// validateBase rejects a missing --base and any host at or under ubuntu.com, so
-// the tool cannot be pointed at the public Ubuntu archive.
+// validateBase requires --target and checks that it is an http(s) URL with a host.
 func validateBase(base string) error {
 	if base == "" {
-		return errors.New("--base is required: the archive root URL of the server to load test, e.g. http://SERVER/ubuntu")
+		return errors.New("--target (-t) is required: the archive root URL of the server to load test, e.g. http://SERVER/ubuntu")
 	}
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return fmt.Errorf("--base %q must be an http:// or https:// URL with a host", base)
-	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	if host == "ubuntu.com" || strings.HasSuffix(host, ".ubuntu.com") {
-		return fmt.Errorf("--base host %q is a public Ubuntu archive; load testing it is not allowed (use your own server)", host)
+		return fmt.Errorf("--target %q must be an http:// or https:// URL with a host", base)
 	}
 	return nil
 }

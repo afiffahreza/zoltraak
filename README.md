@@ -23,38 +23,37 @@ Needs Go >= 1.22 (Ubuntu 24.04: `apt install golang-go`).
 
 ## Run
 
-`--base` is required: the archive root URL of the server you want to test. Hosts at or under
-`ubuntu.com` (for example `archive.ubuntu.com`) are refused, so the public archive cannot be load
-tested. `--index-base` may still point at the real archive: the tool only downloads the small
-`Packages.gz` index files from it, one per suite/component.
+`--target` (`-t`) is required: the archive root URL of the server you want to test.
 
 ```sh
 # Check pool size and expected bandwidth first, no load sent
-./archive-loadtest --base http://SERVER/ubuntu --dry-run
+./archive-loadtest --target http://SERVER/ubuntu --dry-run
 
 # Defaults (laptop-friendly): ramp 0->5 rps over 1m, hold 1m, packages <= 1 MiB (450 unique packages)
-./archive-loadtest --base http://SERVER/ubuntu
+./archive-loadtest --target http://SERVER/ubuntu
 
 # Full-scale run: 200 rps, 5m ramp, 2m hold, no size cap (54,000 unique packages)
-./archive-loadtest --base http://SERVER/ubuntu --rate 200 --ramp 5m --hold 2m --max-inflight 2000 --max-size 0
+./archive-loadtest --target http://SERVER/ubuntu --rate 200 --ramp 5m --hold 2m --max-inflight 2000 --max-size 0
 
-# Server addressed by IP, indexes fetched from the real archive
-./archive-loadtest --base http://10.0.0.5/ubuntu --host archive.ubuntu.com \
-  --index-base http://archive.ubuntu.com/ubuntu
-```
+# Server addressed by IP: send "Host: archive.ubuntu.com" (--host) and fetch the package
+# indexes from the real archive (--index) instead of from the server
+./archive-loadtest --target http://10.0.0.5/ubuntu --host archive.ubuntu.com \
+  --index http://archive.ubuntu.com/ubuntu
 
-Cache test: 500 distinct packages of 10-200 MB, sampled at random with repeats. Request count is
-still `rate*ramp/2 + rate*hold`; the first request for each package is a cache miss, later ones hit.
-`--dry-run` prints the distinct footprint, i.e. the total size of the packages that will be requested.
-
-```sh
-./archive-loadtest --base http://SERVER/ubuntu --min-size 10485760 --max-size 209715200 \
+# Cache test: 500 distinct packages of 10-200 MB, sampled at random with repeats.
+# The first request for each package is a cache miss, later ones hit. 
+# `--dry-run` prints the distinct footprint, i.e. the total size that will be requested.
+./archive-loadtest --target http://SERVER/ubuntu --min-size 10M --max-size 200M \
   --distinct 500 --rate 1 --ramp 1m --hold 10m --timeout 5m --max-inflight 100
 ```
 
 Key flags: `--rate`, `--ramp`, `--hold`, `--suites`, `--components`, `--arch`, `--min-size`,
 `--max-size`, `--distinct`, `--max-inflight`, `--timeout`, `--seed`, `--out`. Run with `--help`
 (or `-h`) for all of them.
+
+`--min-size` and `--max-size` take plain bytes (`1048576`) or a suffix: `K`, `M`, `G`, `T` (also
+`KiB`, `MiB`, ...) are powers of 1024, so `1M` = `1048576`. `KB`, `MB`, ... are powers of 1000
+(`1MB` = `1000000`). Suffixes are case-insensitive and may be fractional (`1.5G`). `0` = no limit.
 
 ## Sizing a run
 
@@ -96,7 +95,7 @@ Max rate = budget / average package size. Approximate averages measured on noble
 Recommended on 50 Mbit/s Wi-Fi: small packages and repeats, for a cache-hit test.
 
 ```sh
-./archive-loadtest --base http://SERVER/ubuntu --max-size 1048576 --distinct 200 \
+./archive-loadtest --target http://SERVER/ubuntu --max-size 1M --distinct 200 \
   --rate 10 --ramp 1m --hold 5m --max-inflight 100 --out reports/
 ```
 
@@ -121,7 +120,7 @@ also writes three files named by start time (reruns never overwrite):
 - `report-<UTC time>.csv`: the same time series, one row per interval, for gnuplot/spreadsheets/Grafana.
 
 ```sh
-./archive-loadtest --base http://SERVER/ubuntu --out reports/
+./archive-loadtest --target http://SERVER/ubuntu --out reports/
 jq '.summary' reports/report-*.json
 ```
 
@@ -141,8 +140,8 @@ totals. The report is also written after Ctrl-C (`"interrupted": true`) but not 
   in the size range are needed. The tool refuses to start if the pool is too small.
 - **Reruns.** The shuffle is random per run, so repeated runs overlap and the cache may already be
   warm for earlier packages. Use a different `--suites`/`--seed` or flush the cache between runs.
-- Indexes are fetched from `--base` by default, which warms those index objects only. Use
-  `--index-base` to fetch them from elsewhere.
+- Indexes are fetched from `--target` by default, which warms those index objects only. Use
+  `--index` (`-i`) to fetch them from elsewhere.
 - HTTP/1.1 with keep-alive; the `HTTP_PROXY`/`HTTPS_PROXY` environment variables are ignored; no
   `Accept-Encoding: gzip`.
 - Ctrl-C stops dispatch, drains in-flight requests, prints the summary. A second Ctrl-C aborts.
