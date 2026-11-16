@@ -34,7 +34,7 @@ jobs:
           for os in linux darwin; do
             for arch in amd64 arm64; do
               output="$(mktemp -d)"
-              GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$output/zoltraak" .
+              GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$output/zoltraak" ./cmd/zoltraak
               if [ "$os/$arch" = linux/amd64 ]; then
                 "$output/zoltraak" --help
               fi
@@ -66,7 +66,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          tag="v0.0.${GITHUB_RUN_NUMBER}"
+          tag="v0.${GITHUB_RUN_NUMBER}"
           gh release create "$tag" dist/* \
             --target "$GITHUB_SHA" \
             --title "Zoltraak $tag" \

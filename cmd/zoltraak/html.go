@@ -82,6 +82,10 @@ func buildView(r report) htmlView {
 	}
 
 	dur := func(sec float64) string { return time.Duration(sec * float64(time.Second)).String() }
+	shape := c.Shape
+	if shape == "" {
+		shape = "linear"
+	}
 	v.Config = [][2]string{
 		{"Base URL", c.Base}, {"Index base", c.IndexBase},
 	}
@@ -92,8 +96,9 @@ func buildView(r report) htmlView {
 		[2]string{"Suites", strings.Join(c.Suites, ", ")},
 		[2]string{"Components", strings.Join(c.Components, ", ")},
 		[2]string{"Architecture", c.Arch},
-		[2]string{"Peak rate", fmt.Sprintf("%.0f req/s", c.PeakRPS)},
-		[2]string{"Ramp / hold", dur(c.RampSeconds) + " / " + dur(c.HoldSeconds)},
+		[2]string{"Shape", shape},
+		[2]string{"Peak rate", strconv.FormatFloat(c.PeakRPS, 'f', -1, 64) + " req/s"},
+		[2]string{"Time to peak / hold", dur(c.RampSeconds) + " / " + dur(c.HoldSeconds)},
 		[2]string{"Planned requests", strconv.Itoa(c.PlannedRequests)},
 		[2]string{"Planned payload", fmt.Sprintf("%.2f GiB", float64(c.PlannedBytes)/(1<<30))},
 		[2]string{"Min package size", sizeOrNone(c.MinSizeBytes)},
@@ -104,6 +109,12 @@ func buildView(r report) htmlView {
 		[2]string{"Seed", strconv.FormatUint(c.Seed, 10)},
 		[2]string{"Elapsed", dur(math.Round(s.ElapsedS*10) / 10)},
 	)
+	if shape == "step" {
+		v.Config = append(v.Config,
+			[2]string{"Step increment", strconv.FormatFloat(c.StepRPS, 'f', -1, 64) + " req/s"},
+			[2]string{"Step interval", dur(c.StepEverySeconds)},
+		)
+	}
 
 	names := make([]string, 0, len(s.Outcomes))
 	total := 0
@@ -146,20 +157,20 @@ func buildView(r report) htmlView {
 	}
 	v.Charts = []chartView{
 		chart("Request rate (req/s)",
-			chartSeries{"Target (planned)", "tgt dash", col(func(p sample) float64 { return p.TargetRPS })},
-			chartSeries{"Sent", "c1", col(func(p sample) float64 { return p.SentPS })},
-			chartSeries{"Completed", "c3", col(func(p sample) float64 { return p.DonePS })},
-			chartSeries{"Failed", "c4", col(func(p sample) float64 { return p.FailPS })}),
+			plannedTarget(c, math.Max(s.ElapsedS, lastSampleTime(xs))),
+			chartSeries{Name: "Sent", Class: "c1", Vals: col(func(p sample) float64 { return p.SentPS })},
+			chartSeries{Name: "Completed", Class: "c3", Vals: col(func(p sample) float64 { return p.DonePS })},
+			chartSeries{Name: "Failed", Class: "c4", Vals: col(func(p sample) float64 { return p.FailPS })}),
 		chart("Latency of successful requests (ms)",
-			chartSeries{"p50", "c3", col(func(p sample) float64 { return p.P50Ms })},
-			chartSeries{"p95", "c2", col(func(p sample) float64 { return p.P95Ms })},
-			chartSeries{"p99", "c4", col(func(p sample) float64 { return p.P99Ms })},
-			chartSeries{"TTFB p95", "c1 dash", col(func(p sample) float64 { return p.TTFBP95Ms })}),
+			chartSeries{Name: "p50", Class: "c3", Vals: col(func(p sample) float64 { return p.P50Ms })},
+			chartSeries{Name: "p95", Class: "c2", Vals: col(func(p sample) float64 { return p.P95Ms })},
+			chartSeries{Name: "p99", Class: "c4", Vals: col(func(p sample) float64 { return p.P99Ms })},
+			chartSeries{Name: "TTFB p95", Class: "c1 dash", Vals: col(func(p sample) float64 { return p.TTFBP95Ms })}),
 		chart("Throughput (MB/s)",
-			chartSeries{"Downloaded", "c5", col(func(p sample) float64 { return p.MBPerSec })}),
+			chartSeries{Name: "Downloaded", Class: "c5", Vals: col(func(p sample) float64 { return p.MBPerSec })}),
 		chart("Client concurrency",
-			chartSeries{"In-flight requests", "c1", col(func(p sample) float64 { return float64(p.Inflight) })},
-			chartSeries{"Dropped (cumulative)", "c4", col(func(p sample) float64 { return float64(p.Dropped) })}),
+			chartSeries{Name: "In-flight requests", Class: "c1", Vals: col(func(p sample) float64 { return float64(p.Inflight) })},
+			chartSeries{Name: "Dropped (cumulative)", Class: "c4", Vals: col(func(p sample) float64 { return float64(p.Dropped) })}),
 	}
 	return v
 }
@@ -178,9 +189,76 @@ func sizeOrNone(n int64) string {
 	return fmt.Sprintf("%d bytes", n)
 }
 
+func lastSampleTime(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	return xs[len(xs)-1]
+}
+
+// plannedTarget uses schedule boundaries, not interval means. Duplicate times
+// draw vertical transitions; observed series retain their linear interpolation.
+// The curve stops at the observed horizon, and is zero during post-plan drain.
+func plannedTarget(c reportConfig, horizon float64) chartSeries {
+	s := chartSeries{Name: "Target (planned)", Class: "tgt dash"}
+	point := func(t, rate float64) {
+		s.Xs = append(s.Xs, t)
+		s.Vals = append(s.Vals, rate)
+	}
+	end := c.RampSeconds + c.HoldSeconds
+	if end <= 0 {
+		point(0, 0)
+		if horizon > 0 {
+			point(horizon, 0)
+		}
+		return s
+	}
+	if c.Shape == "step" {
+		rate := math.Min(c.StepRPS, c.PeakRPS)
+		point(0, rate)
+		for stage := 1; c.StepEverySeconds > 0; stage++ {
+			t := float64(stage) * c.StepEverySeconds
+			if t >= c.RampSeconds || t > horizon {
+				break
+			}
+			point(t, rate)
+			rate = math.Min(float64(stage+1)*c.StepRPS, c.PeakRPS)
+			point(t, rate)
+		}
+		if c.RampSeconds > horizon {
+			point(horizon, rate)
+			return s
+		}
+		if c.RampSeconds > 0 {
+			point(c.RampSeconds, rate)
+			point(c.RampSeconds, c.PeakRPS)
+		}
+	} else {
+		if c.RampSeconds > 0 {
+			point(0, 0)
+			if c.RampSeconds > horizon {
+				point(horizon, c.PeakRPS*horizon/c.RampSeconds)
+				return s
+			}
+			point(c.RampSeconds, c.PeakRPS)
+		} else {
+			point(0, c.PeakRPS)
+		}
+	}
+	point(math.Min(end, horizon), c.PeakRPS)
+	if end <= horizon {
+		point(end, 0)
+		if end < horizon {
+			point(horizon, 0)
+		}
+	}
+	return s
+}
+
 type chartSeries struct {
 	Name, Class string
 	Vals        []float64
+	Xs          []float64 // nil uses the observed sample times
 }
 
 const (
@@ -190,10 +268,13 @@ const (
 
 // lineChart renders an inline SVG line chart. rampEnd (seconds) draws a marker where the hold phase starts.
 func lineChart(xs []float64, ss []chartSeries, rampEnd float64) string {
-	if len(xs) < 2 {
-		return `<p class="muted">Not enough samples to chart (run was shorter than two intervals).</p>`
+	xmax := lastSampleTime(xs)
+	for _, s := range ss {
+		xmax = math.Max(xmax, lastSampleTime(s.Xs))
 	}
-	xmax := xs[len(xs)-1]
+	if xmax <= 0 {
+		return `<p class="muted">Not enough elapsed time to chart.</p>`
+	}
 	ymax := 0.0
 	for _, s := range ss {
 		for _, y := range s.Vals {
@@ -219,19 +300,23 @@ func lineChart(xs []float64, ss []chartSeries, rampEnd float64) string {
 			x, mt, x, ch-mb, x, ch-mb+16, tickLabel(t))
 	}
 	fmt.Fprintf(&b, `<text class="tick" x="%.1f" y="%.1f" text-anchor="end">time (s)</text>`, cw-mr, ch-4.0)
-	if rampEnd > 0 && rampEnd < xmax {
+	if rampEnd >= 0 && rampEnd < xmax {
 		x := px(rampEnd)
 		fmt.Fprintf(&b, `<line class="phase" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/><text class="tick" x="%.1f" y="%.1f">hold</text>`,
 			x, mt, x, ch-mb, x+4, mt+10)
 	}
 	for _, s := range ss {
+		times := xs
+		if s.Xs != nil {
+			times = s.Xs
+		}
 		b.WriteString(`<path class="line ` + s.Class + `" d="`)
 		for i, y := range s.Vals {
 			cmd := "L"
 			if i == 0 {
 				cmd = "M"
 			}
-			fmt.Fprintf(&b, "%s%.1f,%.1f ", cmd, px(xs[i]), py(y))
+			fmt.Fprintf(&b, "%s%.1f,%.1f ", cmd, px(times[i]), py(y))
 		}
 		b.WriteString(`"/>`)
 	}
@@ -264,7 +349,7 @@ func niceXStep(xmax float64) float64 {
 }
 
 func tickLabel(v float64) string {
-	return strconv.FormatFloat(math.Round(v*100)/100, 'f', -1, 64)
+	return strconv.FormatFloat(v, 'g', 6, 64)
 }
 
 var htmlTmpl = template.Must(template.New("report").Parse(`<!doctype html>

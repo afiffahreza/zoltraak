@@ -11,23 +11,26 @@ import (
 )
 
 type reportConfig struct {
-	Base            string   `json:"base"`
-	IndexBase       string   `json:"index_base"`
-	HostHeader      string   `json:"host_header,omitempty"`
-	Suites          []string `json:"suites"`
-	Components      []string `json:"components"`
-	Arch            string   `json:"arch"`
-	PeakRPS         float64  `json:"peak_rps"`
-	RampSeconds     float64  `json:"ramp_s"`
-	HoldSeconds     float64  `json:"hold_s"`
-	MaxInflight     int      `json:"max_inflight"`
-	TimeoutSeconds  float64  `json:"timeout_s"`
-	MaxSizeBytes    int64    `json:"max_size_bytes"`
-	MinSizeBytes    int64    `json:"min_size_bytes"`
-	Distinct        int      `json:"distinct"`
-	Seed            uint64   `json:"seed"`
-	PlannedRequests int      `json:"planned_requests"`
-	PlannedBytes    int64    `json:"planned_bytes"`
+	Base             string   `json:"base"`
+	IndexBase        string   `json:"index_base"`
+	HostHeader       string   `json:"host_header,omitempty"`
+	Suites           []string `json:"suites"`
+	Components       []string `json:"components"`
+	Arch             string   `json:"arch"`
+	PeakRPS          float64  `json:"peak_rps"`
+	Shape            string   `json:"shape"`
+	StepRPS          float64  `json:"step_rps,omitempty"`
+	StepEverySeconds float64  `json:"step_every_s,omitempty"`
+	RampSeconds      float64  `json:"ramp_s"`
+	HoldSeconds      float64  `json:"hold_s"`
+	MaxInflight      int      `json:"max_inflight"`
+	TimeoutSeconds   float64  `json:"timeout_s"`
+	MaxSizeBytes     int64    `json:"max_size_bytes"`
+	MinSizeBytes     int64    `json:"min_size_bytes"`
+	Distinct         int      `json:"distinct"`
+	Seed             uint64   `json:"seed"`
+	PlannedRequests  int      `json:"planned_requests"`
+	PlannedBytes     int64    `json:"planned_bytes"`
 }
 
 type report struct {
