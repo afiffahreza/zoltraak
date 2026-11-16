@@ -1,0 +1,73 @@
+name: CI and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+          cache: false
+      - name: Check formatting, Go code, and installer
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          sh -n install.sh
+          shellcheck install.sh
+      - name: Build release archives
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              output="$(mktemp -d)"
+              GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$output/zoltraak" .
+              if [ "$os/$arch" = linux/amd64 ]; then
+                "$output/zoltraak" --help
+              fi
+              cp LICENSE README.md "$output/"
+              tar -czf "dist/zoltraak_${os}_${arch}.tar.gz" -C "$output" zoltraak LICENSE README.md
+              rm -rf "$output"
+            done
+          done
+          (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="v0.0.${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Zoltraak $tag" \
+            --generate-notes

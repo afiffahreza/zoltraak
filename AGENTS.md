@@ -76,6 +76,25 @@ gofmt -l . && go vet ./... && go build -o zoltraak .
 - The `zoltraak` binary is gitignored; rebuild after any code change.
 - There are no tests. Verify behaviour with `--dry-run` and the printed plan numbers.
 
+## Release automation
+
+- `.github/workflows/release.yml` checks formatting, runs `go vet` and ShellCheck, builds
+  Linux/macOS amd64/arm64 archives, and smoke-tests the Linux amd64 binary with `--help` on
+  PRs targeting `main`.
+- Every push to `main`, including PR merges and direct pushes, publishes those archives and
+  `SHA256SUMS` with the tag `v0.0.<workflow run number>`. PR checks also consume run numbers,
+  so gaps are expected. Tags point to the exact pushed commit; GitHub generates release notes.
+- Actions must be enabled and repository/organization policy must allow release creation.
+  Only the publishing job has `contents: write`, using the built-in `GITHUB_TOKEN`; no extra
+  secret is needed. Require the `build` status check in `main` branch rules to gate merges.
+- Each archive contains `zoltraak`, `LICENSE`, and `README.md`. `install.sh` detects the
+  platform, resolves the latest release to a fixed tag, verifies its SHA-256 checksum, and
+  installs into `~/.local/bin`. Overrides: `INSTALL_DIR` and `ZOLTRAAK_VERSION`.
+- The installer requires at least one published release. Checksums detect corruption, not
+  independent publisher authenticity. Keep archive names and checksums in sync with the installer.
+- Keep CI and release maintenance details here, not in the human-facing README. Its entry
+  points are **Quick start** (binary install and first run) and **Build locally** (source build).
+
 ## Safety with the user's server
 
 The user tests their own server (it was reached by IP in this session). **Do not send real load
