@@ -1,7 +1,7 @@
 # Zoltraak
 
-Zoltraak is an open-loop HTTP load generator for any server that serves an Ubuntu archive (a caching proxy,
-a mirror, or the archive itself). Single static Go binary, stdlib only. Runs on macOS and Linux.
+Zoltraak is an open-loop HTTP load generator for any server that serves an Ubuntu archive
+(a caching proxy, a mirror, or the archive itself). Single static Go binary, stdlib only.
 
 Zoltraak reads the archive's `Packages.gz` indexes, builds a pool of real `.deb` paths, and requests
 them on a ramp-then-hold schedule. It reports latency, TTFB, throughput and errors live, and can
