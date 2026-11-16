@@ -10,6 +10,7 @@ write an HTML, JSON and CSV report.
 ## Contents
 
 - [Quick start](#quick-start)
+- [Build locally](#build-locally)
 - [How it works](#how-it-works)
 - [Examples](#examples)
 - [Flags](#flags)
@@ -19,20 +20,39 @@ write an HTML, JSON and CSV report.
 
 ## Quick start
 
-Needs Go >= 1.22.
+Install the latest release on Linux or macOS (amd64/arm64), without Go or sudo:
 
 ```sh
-go build -o zoltraak .
+curl -fsSL https://raw.githubusercontent.com/afiffahreza/zoltraak/main/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 
-# 1. Dry run: fetches only Packages.gz, prints the plan and expected bandwidth, sends no load
-./zoltraak --target http://SERVER/ubuntu --dry-run
+# Fetch only Packages.gz and check the plan; sends no package requests
+zoltraak --target http://SERVER/ubuntu --dry-run
 
-# 2. Real run with laptop-friendly defaults (5 rps peak, 1m ramp, 1m hold)
-./zoltraak --target http://SERVER/ubuntu --out reports/
+# Once the plan fits your link: 5 rps peak, 1m ramp, 1m hold
+zoltraak --target http://SERVER/ubuntu --out reports/
 ```
 
-`--target` (`-t`) is required: the archive root URL of the server you want to test. Always do the
-dry run first and check the planned requests and peak bandwidth against your link.
+`--target` (`-t`) is required. Replace `http://SERVER/ubuntu` with the server's archive root.
+Always check the dry-run request count and peak bandwidth before sending load.
+
+The installer verifies SHA-256 checksums and installs into `~/.local/bin`. Add the `export` line
+to your shell profile if needed. Run the install command again to upgrade. It requires `curl`,
+`tar`, and `sha256sum` (Linux) or `shasum` (macOS); inspect the script before running it.
+
+Set `INSTALL_DIR` or `ZOLTRAAK_VERSION` on `sh` to change the destination or pin a release tag.
+You can also download binaries from the [releases page](https://github.com/afiffahreza/zoltraak/releases).
+
+## Build locally
+
+Requires Go >= 1.22 and Git:
+
+```sh
+git clone https://github.com/afiffahreza/zoltraak.git
+cd zoltraak
+go build -o zoltraak .
+./zoltraak --target http://SERVER/ubuntu --dry-run
+```
 
 ## How it works
 
@@ -72,26 +92,26 @@ The tool cannot see the server's cache. Infer hits and misses from latency and T
 
 ```sh
 # Defaults: ramp 0->5 rps over 1m, hold 1m, packages <= 1 MiB (450 unique packages)
-./zoltraak --target http://SERVER/ubuntu
+zoltraak --target http://SERVER/ubuntu
 
 # Full-scale run: 200 rps, 5m ramp, 2m hold, no size cap (54,000 unique packages)
-./zoltraak --target http://SERVER/ubuntu --rate 200 --ramp 5m --hold 2m --max-inflight 2000 --max-size 0
+zoltraak --target http://SERVER/ubuntu --rate 200 --ramp 5m --hold 2m --max-inflight 2000 --max-size 0
 
 # Server addressed by IP: send "Host: archive.ubuntu.com" (--host) and fetch the package
 # indexes from the real archive (--index) instead of from the server
-./zoltraak --target http://10.0.0.5/ubuntu --host archive.ubuntu.com \
+zoltraak --target http://10.0.0.5/ubuntu --host archive.ubuntu.com \
   --index http://archive.ubuntu.com/ubuntu
 
 # Cache test: 500 distinct packages of 10-200 MB, sampled at random with repeats.
 # The first request for each package is a cache miss, later ones can hit.
 # --dry-run prints the distinct footprint, i.e. the total size that will be requested.
-./zoltraak --target http://SERVER/ubuntu --min-size 10M --max-size 200M \
+zoltraak --target http://SERVER/ubuntu --min-size 10M --max-size 200M \
   --distinct 500 --rate 1 --ramp 1m --hold 10m --timeout 5m --max-inflight 100
 ```
 
 ## Flags
 
-Run `./zoltraak --help` for the authoritative list. Flags are written `--name`; Go's parser also
+Run `zoltraak --help` for the authoritative list. Flags are written `--name`; Go's parser also
 accepts `-name`. The only short aliases are `-t` (`--target`), `-i` (`--index`) and `-h` (`--help`).
 
 | Flag | Default | Meaning |
@@ -159,7 +179,7 @@ Max rate = budget / average package size. Approximate averages measured on noble
 Recommended on 50 Mbit/s Wi-Fi: small packages and repeats, for a cache-hit test.
 
 ```sh
-./zoltraak --target http://SERVER/ubuntu --max-size 1M --distinct 200 \
+zoltraak --target http://SERVER/ubuntu --max-size 1M --distinct 200 \
   --rate 10 --ramp 1m --hold 5m --max-inflight 100 --out reports/
 ```
 
@@ -179,7 +199,7 @@ also writes three files named by start time (reruns never overwrite):
 | `report-<UTC time>.csv` | The same time series, one row per interval, for gnuplot, spreadsheets or Grafana. |
 
 ```sh
-./zoltraak --target http://SERVER/ubuntu --out reports/
+zoltraak --target http://SERVER/ubuntu --out reports/
 jq '.summary' reports/report-*.json
 ```
 
