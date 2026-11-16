@@ -4,8 +4,8 @@ Zoltraak is an open-loop HTTP load generator for any server that serves an Ubunt
 (a caching proxy, a mirror, or the archive itself). Single static Go binary, stdlib only.
 
 Zoltraak reads the archive's `Packages.gz` indexes, builds a pool of real `.deb` paths, and requests
-them on a ramp-then-hold schedule. It reports latency, TTFB, throughput and errors live, and can
-write an HTML, JSON and CSV report.
+them on a linear ramp-then-hold schedule, or an optional stepped schedule. It reports latency,
+TTFB, throughput and errors live, and can write an HTML, JSON and CSV report.
 
 ## Contents
 
@@ -50,7 +50,7 @@ Requires Go >= 1.22 and Git:
 ```sh
 git clone https://github.com/afiffahreza/zoltraak.git
 cd zoltraak
-go build -o zoltraak .
+go build -o zoltraak ./cmd/zoltraak
 ./zoltraak --target http://SERVER/ubuntu --dry-run
 ```
 
@@ -68,8 +68,12 @@ flowchart LR
 
 - **Pool.** Downloads `Packages.gz` for the chosen suites, components and architecture, keeps the
   packages inside `--min-size`..`--max-size`, removes duplicates, and shuffles with `--seed`.
-- **Schedule.** The rate ramps linearly from 0 to `--rate` over `--ramp`, then holds for `--hold`.
-  Total requests = `rate*ramp/2 + rate*hold`.
+- **Schedule.** By default, the rate ramps linearly from 0 to `--rate` over `--ramp`, then holds
+  for `--hold`. With `--step X --step-every D --rate Y --hold Z`, it starts immediately at
+  `min(X, Y)` requests/second, adds X every D, and caps at Y. Each below-peak stage lasts D;
+  only the peak stage lasts Z. D defaults to `5m`. Fractional rates and increments are supported.
+  Explicit `--ramp` conflicts with `--step`; the default ramp is ignored in step mode.
+  Request counts integrate the schedule and round down once, not once per stage.
 - **Open loop.** Request n is sent at its scheduled time regardless of how long earlier responses
   take. A slow download only occupies one in-flight slot. If `--max-inflight` slots are all busy,
   the request is *dropped and counted*, never queued.
@@ -97,6 +101,10 @@ zoltraak --target http://SERVER/ubuntu
 # Full-scale run: 200 rps, 5m ramp, 2m hold, no size cap (54,000 unique packages)
 zoltraak --target http://SERVER/ubuntu --rate 200 --ramp 5m --hold 2m --max-inflight 2000 --max-size 0
 
+# Stepped run: 5, 10, 15, 20 rps for 5m each, then 25 rps for 10m.
+# 30m total, 30,000 requests. Check pool size and bandwidth before removing --dry-run.
+zoltraak --target http://SERVER/ubuntu --step 5 --step-every 5m --rate 25 --hold 10m --dry-run
+
 # Server addressed by IP: send "Host: archive.ubuntu.com" (--host) and fetch the package
 # indexes from the real archive (--index) instead of from the server
 zoltraak --target http://10.0.0.5/ubuntu --host archive.ubuntu.com \
@@ -122,9 +130,11 @@ accepts `-name`. The only short aliases are `-t` (`--target`), `-i` (`--index`) 
 | `--suites` | `noble,noble-updates,noble-security` | Suites to draw packages from |
 | `--components` | `main,restricted,universe,multiverse` | Components to include |
 | `--arch` | `amd64` | Architecture (arm64, riscv64, ... live on ports.ubuntu.com) |
-| `--rate` | `5` | Peak requests per second |
-| `--ramp` | `1m` | Linear ramp from 0 to `--rate` |
-| `--hold` | `1m` | Time to hold at `--rate` after the ramp |
+| `--rate` | `5` | Peak requests per second (fractional values supported) |
+| `--ramp` | `1m` | Linear ramp from 0 to `--rate`; explicitly setting this conflicts with `--step` |
+| `--step` | off | Positive RPS increment; starts immediately at `min(step, rate)`, then increases to the peak |
+| `--step-every` | `5m` | Positive duration of each below-peak step; may only be explicitly set with `--step` |
+| `--hold` | `1m` | Time at the peak rate only, after either the linear ramp or the below-peak steps |
 | `--max-inflight` | `100` | Client-side cap on concurrent requests; excess is dropped and counted |
 | `--timeout` | `60s` | Per-request timeout |
 | `--min-size` | `0` (no limit) | Skip packages smaller than this |
@@ -139,11 +149,19 @@ accepts `-name`. The only short aliases are `-t` (`--target`), `-i` (`--index`) 
 `KiB`, `MiB`, ...) are powers of 1024, so `1M` = `1048576`. `KB`, `MB`, ... are powers of 1000
 (`1MB` = `1000000`). Suffixes are case-insensitive and may be fractional (`1.5G`).
 
+Omitting `--step` preserves the linear schedule. Explicit `--step` and `--step-every` values must
+be positive; fractional increments such as `--step 0.25` are valid. If the increment reaches or
+exceeds `--rate`, the run starts at peak and lasts only `--hold`.
+
 ## Sizing a run
 
 `--dry-run` prints the plan and these figures without sending load.
 
-- **Requests** = `rate*ramp/2 + rate*hold`. The ramp is linear, so it averages half the rate.
+- **Requests.** Linear: `floor(rate*ramp/2 + rate*hold)` (durations in seconds). Stepped:
+  `floor(sum(below-peak stage rates * step-every) + rate*hold)`. The below-peak rates are
+  `step, 2*step, ...` strictly below `rate`; the final increase caps at `rate`. Round down only
+  once after summing, so fractional requests carry across stages. For `--step 5 --step-every 5m
+  --rate 25 --hold 10m`, this is `(5+10+15+20)*300 + 25*600 = 30000` requests over 30 minutes.
   Package size and `--distinct` do not change this.
 - **Packages.** Without `--distinct`, every request is a different package (the pool must have at
   least that many). With `--distinct N`, N packages are kept and each request picks one at random,
@@ -187,6 +205,17 @@ That is about 3,300 requests at 1-2 MB/s (8-16 Mbit/s, varying with the random p
 peak, comfortably inside the budget. Large packages cannot reach a useful rate on a slow link; for
 those, use a wired connection or run from a machine near the server.
 
+For a gentler staircase on the same link, first inspect this dry-run:
+
+```sh
+zoltraak --target http://SERVER/ubuntu --max-size 1M --distinct 200 \
+  --step 2.5 --step-every 5m --rate 10 --hold 5m --max-inflight 100 --out reports/ --dry-run
+```
+
+It starts immediately at 2.5 rps, spends 5 minutes each at 2.5, 5 and 7.5 rps, then holds
+10 rps for 5 minutes: 20 minutes and 7,500 requests. Steps do not lower peak bandwidth; check
+the dry-run's peak estimate against your link budget before removing `--dry-run`.
+
 ## Reports
 
 A live per-interval table and an end-of-run summary always go to stdout. With `--out DIR`, the run
@@ -207,6 +236,14 @@ Latency percentiles cover successful (HTTP 200, size-matching) responses only; f
 in `outcomes` and `fail_per_s`. The final partial interval is included, so the series sums to the
 totals. The report is also written after Ctrl-C (`"interrupted": true`) but not on a second Ctrl-C.
 
+HTML shows the schedule shape, time to peak, and step settings. Its planned target line comes
+from exact schedule boundaries (a staircase in step mode), not sampled window averages; observed
+rates remain linearly connected samples. The target ends at the planned end and stays zero during
+drain; interrupted reports clip it to the observed time horizon. JSON config retains `ramp_s`
+as the actual time to peak for either shape and adds `shape` (`linear` or `step`), plus `step_rps`
+and `step_every_s` in step mode. Existing JSON keys and CSV columns are unchanged; their sampled
+`target_rps` remains the exact planned mean for each interval, which can straddle step boundaries.
+
 ### Live table columns
 
 | Column | Meaning |
@@ -222,7 +259,8 @@ totals. The report is also written after Ctrl-C (`"interrupted": true`) but not 
   200 rps of average-size debs is roughly 1 Gbit/s or more. On a laptop or Wi-Fi the link saturates
   first and latencies then measure your uplink, not the server. Use `--max-size` to cap
   per-request size.
-- **Pool size.** Without `--distinct`, unique-per-request needs `rate*ramp/2 + rate*hold` packages.
+- **Pool size.** Without `--distinct`, unique-per-request needs as many packages as the planned
+  request count (see [Sizing a run](#sizing-a-run) for both schedule formulas).
   The default suites (noble, noble-updates, noble-security; all components) give well over 54k for
   amd64; add suites such as `jammy,jammy-updates` for longer runs. With `--distinct N` only N
   packages in the size range are needed. The tool refuses to start if the pool is too small.

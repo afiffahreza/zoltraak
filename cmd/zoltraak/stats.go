@@ -123,14 +123,15 @@ func (s *stats) report(p plan, start time.Time, interval time.Duration, done <-c
 	last := start
 	emit := func(now time.Time) {
 		dt := now.Sub(last).Seconds()
-		if dt < 0.05 { // skip degenerate windows (e.g. final flush right after a tick)
+		if dt <= 0 {
 			return
 		}
+		target := (p.cumulativeRequests(now.Sub(start)) - p.cumulativeRequests(last.Sub(start))) / dt
 		last = now
 		s.mu.Lock()
 		smp := sample{
 			TSeconds:   now.Sub(start).Seconds(),
-			TargetRPS:  p.targetRate(now.Sub(start) - time.Duration(dt/2*float64(time.Second))), // window-average target
+			TargetRPS:  target,
 			SentPS:     float64(s.wSent) / dt,
 			DonePS:     float64(s.wDone) / dt,
 			FailPS:     float64(s.wFail) / dt,

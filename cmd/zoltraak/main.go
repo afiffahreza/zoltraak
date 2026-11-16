@@ -19,19 +19,22 @@ import (
 )
 
 type config struct {
-	base, indexBase, host string
-	suites, components    []string
-	arch                  string
-	rate                  float64
-	ramp, hold            time.Duration
-	maxInflight           int
-	timeout               time.Duration
-	maxSize, minSize      int64
-	distinct              int
-	seed                  uint64
-	interval              time.Duration
-	dryRun                bool
-	out                   string
+	base, indexBase, host          string
+	suites, components             []string
+	arch                           string
+	rate                           float64
+	ramp, hold                     time.Duration
+	step                           float64
+	stepEvery                      time.Duration
+	rampSet, stepSet, stepEverySet bool
+	maxInflight                    int
+	timeout                        time.Duration
+	maxSize, minSize               int64
+	distinct                       int
+	seed                           uint64
+	interval                       time.Duration
+	dryRun                         bool
+	out                            string
 }
 
 func parseFlags() config {
@@ -47,8 +50,10 @@ func parseFlags() config {
 	flag.StringVar(&components, "components", "main,restricted,universe,multiverse", "comma-separated components")
 	flag.StringVar(&cfg.arch, "arch", "amd64", "architecture (arm64/riscv64/... live on ports.ubuntu.com)")
 	flag.Float64Var(&cfg.rate, "rate", 5, "peak requests per second")
-	flag.DurationVar(&cfg.ramp, "ramp", time.Minute, "time to ramp linearly from 0 to --rate")
-	flag.DurationVar(&cfg.hold, "hold", time.Minute, "time to hold at --rate after the ramp")
+	flag.DurationVar(&cfg.ramp, "ramp", time.Minute, "time to ramp linearly from 0 to --rate (conflicts with --step)")
+	flag.Float64Var(&cfg.step, "step", 0, "increase requests per second by this amount each --step-every, starting immediately and capped at --rate (conflicts with --ramp)")
+	flag.DurationVar(&cfg.stepEvery, "step-every", 5*time.Minute, "time between rate increases (requires --step)")
+	flag.DurationVar(&cfg.hold, "hold", time.Minute, "time to hold at --rate after reaching peak")
 	flag.IntVar(&cfg.maxInflight, "max-inflight", 100, "client-side cap on concurrent requests; excess requests are dropped and counted")
 	flag.DurationVar(&cfg.timeout, "timeout", 60*time.Second, "per-request timeout")
 	flag.Var(newSizeFlag(&cfg.maxSize, 1<<20), "max-size", "skip packages larger than this `size`: bytes or K/M/G suffix, e.g. 1M, 512K, 200M (0 = no limit)")
@@ -63,6 +68,16 @@ func parseFlags() config {
 	}
 	flag.Usage = usage
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "ramp":
+			cfg.rampSet = true
+		case "step":
+			cfg.stepSet = true
+		case "step-every":
+			cfg.stepEverySet = true
+		}
+	})
 
 	cfg.seed = uint64(seed)
 	cfg.base = strings.TrimRight(cfg.base, "/")
@@ -154,21 +169,60 @@ func validateBase(base string) error {
 	return nil
 }
 
+// pacingPlan validates explicit flag combinations before any index is fetched.
+func (cfg config) pacingPlan() (plan, error) {
+	if cfg.stepSet && cfg.step <= 0 {
+		return plan{}, errors.New("--step must be finite and > 0")
+	}
+	stepped := cfg.stepSet || cfg.step != 0
+	if stepped && cfg.rampSet {
+		return plan{}, errors.New("--step and --ramp cannot be used together")
+	}
+	if cfg.stepEverySet && !stepped {
+		return plan{}, errors.New("--step-every requires --step")
+	}
+	if cfg.stepEverySet && cfg.stepEvery <= 0 {
+		return plan{}, errors.New("--step-every must be > 0")
+	}
+	if stepped && !cfg.stepEverySet && cfg.stepEvery == 0 {
+		cfg.stepEvery = 5 * time.Minute
+	}
+	p := plan{rate: cfg.rate, ramp: cfg.ramp, hold: cfg.hold, step: cfg.step, stepEvery: cfg.stepEvery}
+	return p, p.validate()
+}
+
+// waitUntil uses one reusable timer and remains interruptible during the tail
+// after the final request, so --hold always gets its complete planned duration.
+func waitUntil(ctx context.Context, timer *time.Timer, deadline time.Time) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if d := time.Until(deadline); d > 0 {
+		timer.Reset(d)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+		}
+	}
+	return ctx.Err() == nil
+}
+
 func run(cfg config) error {
 	if err := validateBase(cfg.base); err != nil {
 		return err
 	}
-	if cfg.rate <= 0 || cfg.ramp < 0 || cfg.hold < 0 || cfg.maxInflight <= 0 {
-		return errors.New("--rate and --max-inflight must be > 0; --ramp and --hold must be >= 0")
+	if cfg.maxInflight <= 0 || cfg.interval <= 0 {
+		return errors.New("--max-inflight and --interval must be > 0")
 	}
 	if cfg.minSize < 0 || cfg.distinct < 0 || (cfg.maxSize > 0 && cfg.minSize > cfg.maxSize) {
 		return errors.New("--min-size and --distinct must be >= 0, and --min-size must not exceed --max-size")
 	}
-	pl := plan{rate: cfg.rate, ramp: cfg.ramp, hold: cfg.hold}
-	total := pl.total()
-	if total == 0 {
-		return errors.New("plan issues zero requests")
+	pl, err := cfg.pacingPlan()
+	if err != nil {
+		return err
 	}
+	total := pl.total()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -193,8 +247,14 @@ func run(cfg config) error {
 		}
 	}
 	avg := float64(bytes) / float64(total)
-	fmt.Printf("\nplan: ramp 0->%.0f rps over %s, hold %s => %d requests over %d distinct packages (shuffled, seed %d)\n",
-		cfg.rate, cfg.ramp, cfg.hold, total, len(uniq), cfg.seed)
+	if pl.step > 0 {
+		fmt.Printf("\nplan: step %g rps every %s, starting at %g rps, capped at %g rps after %s, hold %s",
+			pl.step, pl.stepEvery, pl.targetRate(0), pl.rate, pl.rampDuration(), pl.hold)
+	} else {
+		fmt.Printf("\nplan: linear ramp 0->%g rps over %s, hold %s", pl.rate, pl.ramp, pl.hold)
+	}
+	fmt.Printf(" => %d requests over %s, %d distinct packages (shuffled, seed %d)\n",
+		total, pl.duration(), len(uniq), cfg.seed)
 	fmt.Printf("      payload %.2f GiB total, avg %.0f KiB/request, ~%.0f MB/s (%.2f Gbit/s) at peak\n",
 		float64(bytes)/(1<<30), avg/1024, avg*cfg.rate/1e6, avg*cfg.rate*8/1e9)
 	fmt.Printf("      distinct footprint %.2f GiB (total size of the distinct packages requested)\n",
@@ -212,18 +272,12 @@ func run(cfg config) error {
 	stopReport, reportDone := make(chan struct{}), make(chan struct{})
 	go st.report(pl, start, cfg.interval, stopReport, reportDone)
 
-	timer := time.NewTimer(0)
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
 	defer timer.Stop()
 dispatch:
 	for n := range total {
-		if d := time.Until(start.Add(pl.at(n))); d > 0 {
-			timer.Reset(d)
-			select {
-			case <-ctx.Done():
-				break dispatch
-			case <-timer.C:
-			}
-		} else if ctx.Err() != nil {
+		if !waitUntil(ctx, timer, start.Add(pl.at(n))) {
 			break dispatch
 		}
 		select {
@@ -244,6 +298,7 @@ dispatch:
 			st.record(fetch(client, cfg, p))
 		}(reqs[n])
 	}
+	waitUntil(ctx, timer, start.Add(pl.duration()))
 
 	interrupted := ctx.Err() != nil
 	stop() // restore default signal handling: a second Ctrl-C kills immediately
@@ -260,13 +315,18 @@ dispatch:
 	if cfg.out == "" {
 		return nil
 	}
+	stepEverySeconds := 0.0
+	if pl.step > 0 {
+		stepEverySeconds = pl.stepEvery.Seconds()
+	}
 	paths, err := writeReport(cfg.out, report{
 		StartedAt:   start,
 		Interrupted: interrupted,
 		Config: reportConfig{
 			Base: cfg.base, IndexBase: cfg.indexBase, HostHeader: cfg.host,
 			Suites: cfg.suites, Components: cfg.components, Arch: cfg.arch,
-			PeakRPS: cfg.rate, RampSeconds: cfg.ramp.Seconds(), HoldSeconds: cfg.hold.Seconds(),
+			Shape: pl.shape(), StepRPS: pl.step, StepEverySeconds: stepEverySeconds,
+			PeakRPS: cfg.rate, RampSeconds: pl.rampSeconds(), HoldSeconds: cfg.hold.Seconds(),
 			MaxInflight: cfg.maxInflight, TimeoutSeconds: cfg.timeout.Seconds(),
 			MaxSizeBytes: cfg.maxSize, MinSizeBytes: cfg.minSize, Distinct: cfg.distinct, Seed: cfg.seed,
 			PlannedRequests: total, PlannedBytes: bytes,

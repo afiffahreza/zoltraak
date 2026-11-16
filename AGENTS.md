@@ -6,20 +6,24 @@ this file covers structure, decisions and gotchas.
 ## What this is
 
 An open-loop HTTP load generator for any server that serves an Ubuntu archive. It reads
-`Packages.gz` indexes, builds a pool of `.deb` paths, and requests them on a ramp-then-hold
-schedule. Go (>= 1.22), stdlib only, single `package main`, no tests.
+`Packages.gz` indexes, builds a pool of `.deb` paths, and requests them on a linear or stepped
+increase followed by a peak hold. Go (>= 1.22), stdlib only, single `package main`.
 
 ## Layout
+
+All Go source lives in `cmd/zoltraak/` as one `package main`; the file names below are relative
+to that directory. Keep the module definition, installer, license and documentation at the root.
 
 | File | Role |
 |---|---|
 | `main.go` | Flags (`parseFlags`, `usage`, `shortcuts`), `validateBase`, `run` (orchestration, dispatch loop), `fetch` (one request), `newClient` |
 | `index.go` | `loadPool` (fetch indexes, filter by size, dedupe), `schedule` (unique vs `--distinct` sampling), `shuffle`, `parsePackages` |
 | `size.go` | `sizeFlag` (`flag.Value`) and `parseSize`: `--min-size`/`--max-size` accept bytes or K/M/G/T suffixes (K/KiB = 1024, KB = 1000) |
-| `pacer.go` | `plan`: ramp/hold math. `at(n)` is when request n is due |
+| `pacer.go` | `plan`: linear and stepped schedule math. `at(n)` is when request n is due; `cumulativeRequests(t)` integrates the schedule for interval means |
 | `stats.go` | Counters, per-interval `sample`s, percentiles, live table, final summary |
 | `report.go` | `--out` writer for `report-<UTC>.{json,csv,html}` |
 | `html.go` | Self-contained HTML report (inline CSS/SVG, no JS) |
+| `*_test.go` | Schedule math, CLI validation, stats window targets, and report/chart regression tests |
 
 Flow: flags -> `validateBase` -> `loadPool` -> `shuffle` -> `schedule` -> print plan (`--dry-run`
 stops here) -> dispatch loop (one goroutine per request, semaphore = `--max-inflight`) -> stats ->
@@ -31,7 +35,20 @@ summary -> report.
   slow download only occupies one in-flight slot. If `--max-inflight` is full the request is
   dropped and counted, never queued. `dispatch:` is a label so `break dispatch` can leave the
   loop from inside the `select`.
-- **Request count** = `rate*ramp/2 + rate*hold`. It never depends on package size or `--distinct`.
+- **Request count.** Linear: `floor(rate*ramp/2 + rate*hold)`. Stepped:
+  `floor(sum(below-peak stage rates * stepEvery) + rate*hold)`, with durations in seconds.
+  Fractional requests carry across stages; floor only the final total. Package size and
+  `--distinct` never affect the count.
+- **Stepped shape.** `--step X` starts immediately at `min(X, rate)`, increases by X every
+  `--step-every D` (default `5m`), and caps at `--rate`. Each below-peak stage lasts D; only
+  the peak stage lasts `--hold`. A step at least as large as peak means zero time to peak.
+  `plan.rampSeconds()` and report `ramp_s` mean actual time to peak for either shape; the
+  default linear ramp is ignored in step mode. Explicit `--ramp` conflicts with `--step`;
+  explicit `--step-every` without `--step`, or nonpositive explicit step settings, are invalid.
+- **Interval targets.** Use differences of `plan.cumulativeRequests(t)` divided by the full
+  window duration, including any post-plan drain. Do not average stage endpoints or round
+  stage request counts. HTML planned targets use exact config-derived boundaries, with vertical
+  transitions for steps, clipped to the observed horizon and zero after the planned end.
 - **Two workloads.** `--distinct 0` (default): every request is a different package, so the pool
   must be at least as big as the request count. `--distinct N`: keep the first N packages of the
   shuffled pool and sample them uniformly with replacement (seeded, so `--seed` replays it). Fewer
@@ -67,14 +84,15 @@ summary -> report.
 ## Build and verify
 
 ```sh
-gofmt -l . && go vet ./... && go build -o zoltraak .
+gofmt -l . && go test ./... && go vet ./... && go build -o zoltraak ./cmd/zoltraak
 ./zoltraak -t http://SERVER/ubuntu --dry-run     # safe: only downloads Packages.gz
 ```
 
 - `--dry-run` fetches only the index files (from `--index`, else `--target`). It sends no package
   requests, so it is the right smoke test.
 - The `zoltraak` binary is gitignored; rebuild after any code change.
-- There are no tests. Verify behaviour with `--dry-run` and the printed plan numbers.
+- Unit tests cover schedule math and validation without contacting the server. Use `--dry-run`
+  to inspect real index pool sizes and printed plan numbers; never send load as a test.
 
 ## Release automation
 
@@ -112,3 +130,8 @@ Mbit/s link that is about 4 MB/s. The README's "Choosing settings for a laptop" 
 
 If you change a flag, default or the plan math, update `README.md` (flag names in examples, the
 "Sizing a run" section, the laptop table) and the help strings in `main.go`.
+Step math and report semantics are documented in the README's "How it works", "Sizing a run"
+and "Reports" sections; keep those formulas, examples, and `pacer.go` in sync. Preserve existing
+JSON keys and CSV columns when extending reports. `shape` is `linear` or `step`; `step_rps` and
+`step_every_s` are step-only config fields, and `ramp_s` is time to peak rather than the unused
+linear ramp flag in step mode.

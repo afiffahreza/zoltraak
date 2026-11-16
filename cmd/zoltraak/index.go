@@ -60,7 +60,7 @@ func schedule(pool []pkg, total, distinct int, seed uint64) ([]pkg, error) {
 	if distinct == 0 {
 		if len(pool) < total {
 			return nil, fmt.Errorf("pool has %d unique packages but the plan needs %d (every request must be unique); "+
-				"add --suites/--components, widen the size range, reduce --rate/--ramp/--hold, or set --distinct", len(pool), total)
+				"add --suites/--components, widen the size range, reduce --rate/--hold or the ramp/step-up duration, or set --distinct", len(pool), total)
 		}
 		return pool[:total], nil
 	}
